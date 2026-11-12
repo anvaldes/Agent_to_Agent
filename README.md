@@ -1,14 +1,72 @@
-# Agent2Agent (A2A) negotiation demo on Cloud Run
+# Agent2Agent (A2A) test repo on Cloud Run
 
-Three independent AI agents, all powered by Claude and each its own Cloud Run service, play a B2B negotiation game.
-They talk to each other **only** through the [Agent2Agent (A2A) protocol](https://a2a-protocol.org)
-(spec 1.0, JSON-RPC binding, `a2a-sdk==1.3.0`).
+> **This is a test / learning repository.** It exists to try out the Agent2Agent (A2A) protocol end to
+> end: three AI agents, three separate Cloud Run services, talking to each other only through A2A.
+> It is a demo, not production code. Some shortcuts are deliberate: state lives in memory, the services
+> are public (`--allow-unauthenticated`), and there is a single shared API key.
 
-- **Central Coffee Co.** (buyer, powered by Claude) wants to buy 500 kg of roasted specialty coffee beans.
-- **Andes Roasters** (supplier, powered by Claude) wants to sell them at a good margin.
-- A neutral **referee** (powered by Claude) checks the final deal and scores both sides.
+## 1. What this repo is
 
-## Architecture
+A small B2B negotiation game used as a test bed for A2A:
+
+- **Central Coffee Co.** (buyer agent) wants to buy 500 kg of roasted specialty coffee beans.
+- **Andes Roasters** (supplier agent) wants to sell them at a good margin.
+- A neutral **referee agent** checks the final deal and scores both sides.
+
+Each agent is its own service, with its own LLM calls, private instructions and deployment. All three
+use Claude. They never share code, memory or databases: everything they know about each other comes
+through A2A messages. The protocol version is 1.0 (JSON-RPC binding), implemented with the official
+Python SDK `a2a-sdk==1.3.0`.
+
+## 2. What is Agent2Agent (A2A)?
+
+[Agent2Agent (A2A)](https://a2a-protocol.org) is an open protocol that lets AI agents discover each other
+and work together, even when different teams build them with different frameworks, LLMs or vendors.
+Google introduced it in April 2025, and it is now an open-source project under the Linux Foundation.
+
+The idea: an agent should be able to delegate work to another agent the way a browser talks to any web
+server, through a shared contract and without knowing how the other side is built. Each agent is treated
+as an **opaque** service: you see what it can do, not its prompts, tools or internal state.
+
+### Core concepts
+
+| Concept | What it is | Where you see it in this repo |
+|---|---|---|
+| **Agent Card** | A JSON "business card" at `/.well-known/agent-card.json`: the agent's name, description, endpoint URL, capabilities and skills. Clients read it to discover the agent. | `build_agent_card()` in each `main.py` |
+| **Skill** | One thing the agent can do, described in its Agent Card. | `negotiate_purchase`, `quote_and_negotiate`, `evaluate_deal` |
+| **Message** | One turn of communication, from a user (client) or from an agent. | Each offer the buyer sends to the supplier |
+| **Part** | The content of a message or artifact: a `TextPart` (text), a `DataPart` (structured JSON) or a file. | Every offer is a TextPart plus a DataPart |
+| **Task** | A unit of work with an id and a lifecycle (`SUBMITTED → WORKING → COMPLETED / FAILED / REJECTED…`). | One Task per negotiation round, and one for the whole negotiation |
+| **Artifact** | The output a Task produces. | `counter_offer`, `deal_summary`, `transcript`, `verdict` |
+| **contextId** | Groups several Tasks and messages into one conversation. | The buyer reuses one `context_id` for every round |
+| **Transport** | How requests travel: JSON-RPC 2.0, gRPC or HTTP+JSON, over HTTPS. Streaming uses Server-Sent Events (SSE). | JSON-RPC on `POST /`, streaming status updates to `client.py` |
+
+### A2A and MCP
+
+A2A is often mentioned alongside the [Model Context Protocol (MCP)](https://modelcontextprotocol.io).
+They solve different problems and work well together:
+
+- **MCP** connects an agent to its **tools and data** (databases, APIs, files). The agent controls the tool.
+- **A2A** connects an agent to **other agents**. Each agent is autonomous and decides how to do the work.
+
+In this repo, the supplier could use MCP internally to read real stock levels from an ERP, and it would
+still talk to the buyer over A2A.
+
+## 3. Why A2A? Benefits
+
+| Benefit | What it means | How this repo shows it |
+|---|---|---|
+| **Interoperability** | Agents built with different LLMs, frameworks or vendors can work together through one standard. | The supplier was first built on Gemini and later switched to Claude, with no change to the buyer: the contract is A2A, not the model. |
+| **Opacity and privacy** | Agents work together without exposing their prompts, tools or internal data. | Each side's private brief (budget, cost, floor price) never leaves its service. Only offers cross the wire. |
+| **Dynamic discovery** | A client learns what an agent can do, and where to call it, from its Agent Card. | The buyer reads the supplier's and referee's Agent Cards at runtime instead of hard-coding their APIs. |
+| **Independent deployment and scaling** | Each agent is its own service, with its own lifecycle, team and scaling rules. | Three Cloud Run services, three images and per-agent settings (for example `--max-instances=1` only on the supplier). |
+| **Long-running work with feedback** | Tasks have states, streaming updates and artifacts, so a multi-step job can report progress. | `client.py` shows each negotiation round live as a status update, then the final artifacts. |
+| **Structured, reliable exchange** | DataParts carry typed JSON next to human-readable text, so agents agree on terms without parsing prose. | The `{"offer": {...}}` contract shared by buyer and supplier. |
+| **Built on web standards** | HTTP, JSON-RPC, SSE and standard authentication schemes; it runs anywhere an HTTP service runs. | Plain Starlette apps behind uvicorn on Cloud Run, testable with `curl`. |
+
+## 4. How the code works
+
+### Architecture
 
 ```
                          A2A (JSON-RPC over HTTPS)
@@ -31,7 +89,7 @@ They talk to each other **only** through the [Agent2Agent (A2A) protocol](https:
                         GET /health                         (plain health check)
 ```
 
-## The agents
+### The agents
 
 | Service | LLM | Agent Card name | Skill | What it does |
 |---|---|---|---|---|
@@ -43,7 +101,7 @@ They talk to each other **only** through the [Agent2Agent (A2A) protocol](https:
 - Buyer: never offers more than `max_price_per_kg`, never accepts delivery later than allowed, and an `ACCEPT` always copies the supplier's last terms.
 - Supplier: never offers or accepts less than the floor price, raised by 8% for rush delivery and by 3% for long payment terms. An `ACCEPT` always copies the buyer's terms.
 
-## The offer contract
+### The offer contract
 
 Every negotiation message (buyer → supplier and supplier → buyer) has two parts:
 
@@ -68,7 +126,7 @@ Referee request: DataPart `{"deal_summary": {...}}` + TextPart with the transcri
  "winner": "BUYER", "reasoning": "...", "market_price_per_kg": 8.25}
 ```
 
-## Run locally
+## 5. Run locally
 
 Prerequisites: Python 3.12+ and an Anthropic API key (all three agents use it).
 
@@ -100,7 +158,7 @@ over real HTTP, with Claude stubbed. They cover: a deal, a supplier `WITHDRAW`, 
 max-price guardrail and the referee verdict. Supplier and referee tests cover the floor-price guardrail,
 history per `context_id` and the rule checks, with Claude stubbed.
 
-## Deployment (GitHub Actions → Cloud Run)
+## 6. Deployment (GitHub Actions → Cloud Run)
 
 Pushing to `main` runs [`.github/workflows/deploy.yml`](.github/workflows/deploy.yml):
 
@@ -121,7 +179,7 @@ Convention: **folder name = image name = Cloud Run service name**, and service U
 `https://<service>-115741533268.us-central1.run.app`. `AGENT_URL` matters: A2A clients send requests to
 the URL advertised in the Agent Card.
 
-## Try the deployed agents
+## 7. Try the deployed agents
 
 ```bash
 BUYER=https://buyer-agent-115741533268.us-central1.run.app
@@ -149,7 +207,7 @@ curl -s $SUPPLIER/ -H 'Content-Type: application/json' -H 'A2A-Version: 1.0' -d 
   ]}}}' | python3 -m json.tool
 ```
 
-## Repository layout
+## 8. Repository layout
 
 ```
 buyer-agent/      main.py · config.py · agent_executor.py · negotiation.py · offer.py
