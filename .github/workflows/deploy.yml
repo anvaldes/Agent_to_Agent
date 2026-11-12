@@ -11,6 +11,7 @@ env:
   REGISTRY: us-central1-docker.pkg.dev
   AR_REPO: agent2agent            # Single Artifact Registry repo for all agents
   SERVICE_ACCOUNT: agent2agent@lab-experiments-514316.iam.gserviceaccount.com   # Cloud Run runtime SA for all agents
+  PROJECT_NUMBER: '115741533268'  # Service URLs: https://<service>-<PROJECT_NUMBER>.<REGION>.run.app
 
 jobs:
   # Detect which agents changed in this push
@@ -32,6 +33,12 @@ jobs:
             buyer-agent:
               - 'buyer-agent/**'
               - '.github/workflows/deploy.yml'
+            supplier-agent:
+              - 'supplier-agent/**'
+              - '.github/workflows/deploy.yml'
+            referee-agent:
+              - 'referee-agent/**'
+              - '.github/workflows/deploy.yml'
 
   # Sync GitHub secrets into GCP Secret Manager (create if missing, add a new version only if the value changed)
   sync-secrets:
@@ -42,7 +49,7 @@ jobs:
       contents: read
     steps:
       - name: Authenticate to Google Cloud
-        uses: google-github-actions/auth@v1
+        uses: google-github-actions/auth@v2
         with:
           credentials_json: '${{ secrets.GCP_SA_KEY }}'
       - name: Set up gcloud
@@ -89,7 +96,7 @@ jobs:
       # 1. Authentication
       - id: 'auth'
         name: 'Authenticate to Google Cloud'
-        uses: 'google-github-actions/auth@v1'
+        uses: 'google-github-actions/auth@v2'
         with:
           credentials_json: '${{ secrets.GCP_SA_KEY }}'
       - name: Set up gcloud
@@ -111,17 +118,47 @@ jobs:
       - name: Push Docker image to Artifact Registry (${{ matrix.agent }})
         run: docker push --all-tags ${{ env.IMAGE }}
 
-      # 4. Deploy to Cloud Run
+      # 4. Deploy to Cloud Run with per-agent configuration
       - name: Deploy to Cloud Run (${{ matrix.agent }})
+        env:
+          AGENT: ${{ matrix.agent }}
         run: |
-          gcloud run deploy ${{ matrix.agent }} \
-          --image=${{ env.IMAGE }}:${{ github.sha }} \
-          --platform=managed \
-          --region=${{ env.REGION }} \
-          --allow-unauthenticated \
-          --project=${{ env.PROJECT_ID }} \
-          --memory=256Mi \
-          --cpu=1 \
-          --concurrency=16 \
-          --service-account=${{ env.SERVICE_ACCOUNT }} \
-          --set-secrets="ANTHROPIC_API_KEY=ANTHROPIC_API_KEY:latest"
+          set -euo pipefail
+          url_of() { echo "https://$1-${PROJECT_NUMBER}.${REGION}.run.app"; }
+          AGENT_URL="$(url_of "$AGENT")"
+
+          # Per-agent settings. To add an agent: add a case branch (and a paths filter above).
+          EXTRA_FLAGS=()
+          case "$AGENT" in
+            buyer-agent)
+              ENV_VARS="AGENT_URL=${AGENT_URL},SUPPLIER_AGENT_URL=$(url_of supplier-agent),REFEREE_AGENT_URL=$(url_of referee-agent),USE_ID_TOKEN=false"
+              EXTRA_FLAGS+=(--set-secrets="ANTHROPIC_API_KEY=ANTHROPIC_API_KEY:latest")
+              EXTRA_FLAGS+=(--timeout=900)   # a full negotiation spans several LLM calls per round
+              ;;
+            supplier-agent)
+              # Gemini through Vertex AI with the runtime service account: no API key.
+              ENV_VARS="AGENT_URL=${AGENT_URL},GOOGLE_GENAI_USE_VERTEXAI=true,GOOGLE_CLOUD_PROJECT=${PROJECT_ID},GOOGLE_CLOUD_LOCATION=global"
+              EXTRA_FLAGS+=(--clear-secrets)
+              EXTRA_FLAGS+=(--max-instances=1)   # negotiation history is kept in memory per context_id
+              ;;
+            referee-agent)
+              ENV_VARS="AGENT_URL=${AGENT_URL}"
+              EXTRA_FLAGS+=(--set-secrets="ANTHROPIC_API_KEY=ANTHROPIC_API_KEY:latest")
+              ;;
+            *)
+              echo "::error::No deploy configuration for agent '$AGENT'"; exit 1 ;;
+          esac
+
+          gcloud run deploy "$AGENT" \
+            --image="${IMAGE}:${{ github.sha }}" \
+            --platform=managed \
+            --region="$REGION" \
+            --project="$PROJECT_ID" \
+            --allow-unauthenticated \
+            --memory=256Mi \
+            --execution-environment=gen1 \
+            --cpu=1 \
+            --concurrency=16 \
+            --service-account="$SERVICE_ACCOUNT" \
+            --set-env-vars="$ENV_VARS" \
+            "${EXTRA_FLAGS[@]}"

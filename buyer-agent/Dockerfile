@@ -1,13 +1,8 @@
-FROM python:3.10-slim
+FROM python:3.12-slim
 
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
-    PORT=8080 \
-    GOOGLE_CLOUD_PROJECT=lab-experiments-514316
-
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    build-essential gcc libffi-dev libssl-dev curl && \
-    apt-get clean && rm -rf /var/lib/apt/lists/*
+    PORT=8080
 
 WORKDIR /app
 
@@ -16,4 +11,5 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY . .
 
-CMD ["gunicorn", "--timeout", "0", "--bind", ":8080", "main:app"]
+# A2A servers are ASGI apps (Starlette), so we run them with uvicorn instead of gunicorn/Flask.
+CMD exec uvicorn main:app --host 0.0.0.0 --port ${PORT}
