@@ -1,6 +1,6 @@
 """Pricing rules and the hard guardrail of the Supplier Agent.
 
-The LLM proposes; this module disposes. Whatever Gemini answers, the supplier
+The LLM proposes; this module disposes. Whatever Claude answers, the supplier
 never offers or accepts a price below its floor, adjusted for costly terms:
 
   minimum price = floor x (1 + rush surcharge, if delivery is faster than standard)

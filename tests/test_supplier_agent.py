@@ -1,8 +1,5 @@
 """supplier-agent: floor-price guardrail, history per context_id and the A2A contract.
-Gemini is stubbed."""
-
-import json
-from types import SimpleNamespace
+Claude is stubbed."""
 
 import httpx
 from starlette.testclient import TestClient
@@ -11,7 +8,7 @@ from a2a.client import ClientConfig, create_client
 from a2a.helpers import get_data_parts, new_data_part, new_message, new_text_part
 from a2a.types import Role, SendMessageRequest, TaskState
 
-from conftest import free_port, load_agent
+from conftest import FakeClaude, free_port, load_agent
 
 supplier = load_agent("supplier-agent", "config", "offer", "pricing", "negotiation", "agent_executor", "main")
 Offer = supplier.offer.Offer
@@ -22,22 +19,8 @@ def offer(price, status="COUNTER_OFFER", quantity=500, delivery=20, payment=30):
     return Offer(price, quantity, delivery, payment, status, "msg")
 
 
-class FakeGemini:
-    """Stands in for genai.Client: client.aio.models.generate_content returns scripted JSON."""
-
-    def __init__(self, answers: list[dict]) -> None:
-        self.answers = list(answers)
-        self.calls = []
-        self.aio = SimpleNamespace(models=SimpleNamespace(generate_content=self._generate))
-
-    async def _generate(self, model, contents, config):
-        self.calls.append({"model": model, "contents": contents, "config": config})
-        answer = self.answers.pop(0) if len(self.answers) > 1 else self.answers[0]
-        return SimpleNamespace(text=json.dumps(answer), candidates=[])
-
-
 def negotiator_with(answers):
-    fake = FakeGemini(answers)
+    fake = FakeClaude(answers)
     brain = supplier.negotiation.SupplierBrain(BRIEF, client=fake)
     return supplier.negotiation.SupplierNegotiator(BRIEF, brain=brain), fake
 
@@ -79,22 +62,24 @@ def test_impossible_delivery_is_clamped():
     assert reply.delivery_days == 10 and reply.payment_terms_days == 60
 
 
-# --- negotiation memory + Gemini -----------------------------------------------------
+# --- negotiation memory + Claude -----------------------------------------------------
 
-async def test_full_history_sent_to_gemini_per_context():
+async def test_full_history_sent_to_claude_per_context():
     negotiator, fake = negotiator_with([offer(9.2).to_dict(), offer(8.8).to_dict()])
     await negotiator.respond("ctx-1", offer(7.0))
     await negotiator.respond("ctx-2", offer(6.0))   # another negotiation must not leak in
     await negotiator.respond("ctx-1", offer(7.5))
-    last_contents = fake.calls[-1]["contents"]
-    assert [c.role for c in last_contents] == ["user", "model", "user"]
-    assert '"price_per_kg": 7.0' in last_contents[0].parts[0].text
-    assert "minimum price is $6.80" in last_contents[-1].parts[0].text
-    assert fake.calls[-1]["config"].response_mime_type == "application/json"
+    last = fake.requests[-1]
+    assert [m["role"] for m in last["messages"]] == ["user", "assistant", "user"]
+    assert '"price_per_kg": 7.0' in last["messages"][0]["content"]
+    assert "minimum price is $6.80" in last["messages"][-1]["content"]
+    assert last["model"] == "claude-opus-5-5"
+    assert last["output_config"]["format"]["type"] == "json_schema"
+    assert last["fallbacks"] == "default"
     assert len(negotiator.memory.history("ctx-1")) == 2
 
 
-async def test_gemini_below_floor_is_corrected():
+async def test_claude_below_floor_is_corrected():
     negotiator, _ = negotiator_with([offer(5.10).to_dict()])
     reply = await negotiator.respond("ctx", offer(5.0))
     assert reply.price_per_kg >= 6.80
@@ -104,7 +89,7 @@ async def test_buyer_accept_is_acknowledged_without_llm():
     negotiator, fake = negotiator_with([offer(9.0).to_dict()])
     reply = await negotiator.respond("ctx", offer(8.10, status="ACCEPT"))
     assert reply.status == "ACCEPT" and reply.price_per_kg == 8.10
-    assert fake.calls == []
+    assert fake.requests == []
 
 
 async def test_memory_is_bounded():
@@ -120,7 +105,7 @@ def test_agent_card():
     card = TestClient(supplier.main.app).get("/.well-known/agent-card.json").json()
     assert card["name"] == "Supplier Agent - Andes Roasters"
     assert card["skills"][0]["id"] == "quote_and_negotiate"
-    assert "Gemini" in card["description"]
+    assert "Claude" in card["description"]
 
 
 async def test_counter_offer_artifact_over_a2a(serve):

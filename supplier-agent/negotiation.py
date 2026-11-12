@@ -1,8 +1,8 @@
 """Negotiation logic of the Supplier Agent.
 
-  * NegotiationMemory -> keeps each negotiation's history, keyed by A2A context_id
-  * SupplierBrain     -> asks Gemini (Vertex AI) for the supplier's reply, sending the full history
-  * SupplierNegotiator -> handles one buyer message: memory + Gemini + guardrails
+  * NegotiationMemory  -> keeps each negotiation's history, keyed by A2A context_id
+  * SupplierBrain      -> asks Claude for the supplier's reply, sending the full history
+  * SupplierNegotiator -> handles one buyer message: memory + Claude + guardrails
 """
 
 import json
@@ -10,8 +10,7 @@ import logging
 from collections import OrderedDict
 from dataclasses import dataclass
 
-from google import genai
-from google.genai import types
+from anthropic import AsyncAnthropic
 
 import config
 from config import SupplierBrief
@@ -19,6 +18,9 @@ from offer import ACCEPT, OFFER_JSON_SCHEMA, WITHDRAW, Offer
 from pricing import enforce_floor, is_acceptable, list_price_for, minimum_price_for
 
 log = logging.getLogger("supplier-agent.negotiation")
+
+# Server-side refusal fallback: if the model declines, the API retries on a fallback model.
+FALLBACK_BETA = "server-side-fallback-2026-07-01"
 
 SYSTEM_PROMPT = """You are the sales agent of {company}, a coffee roaster. A buyer agent
 is negotiating to buy {product} from you.
@@ -71,44 +73,50 @@ class NegotiationMemory:
 
 
 class SupplierBrain:
-    """Uses Gemini on Vertex AI to decide the supplier's reply from the full history."""
+    """Uses Claude to decide the supplier's reply from the full negotiation history."""
 
-    def __init__(self, brief: SupplierBrief, client: genai.Client | None = None) -> None:
+    def __init__(self, brief: SupplierBrief, client: AsyncAnthropic | None = None) -> None:
         self.brief = brief
         self._client = client
         self.system_prompt = SYSTEM_PROMPT.format(**brief.to_dict())
 
     @property
-    def client(self) -> genai.Client:
-        """Created lazily so the service starts (and tests run) without GCP credentials."""
+    def client(self) -> AsyncAnthropic:
+        """Created lazily so the service starts (and tests run) without an API key."""
         if self._client is None:
-            self._client = genai.Client()  # Vertex AI settings come from environment variables
+            self._client = AsyncAnthropic()  # reads ANTHROPIC_API_KEY
         return self._client
 
     async def decide_reply(self, history: list[Turn], buyer_offer: Offer) -> Offer:
-        """Asks Gemini for the next reply. The caller applies the guardrail afterwards."""
-        response = await self.client.aio.models.generate_content(
+        """Asks Claude for the next reply. The caller applies the guardrail afterwards."""
+        response = await self.client.beta.messages.create(
             model=config.SUPPLIER_MODEL,
-            contents=build_contents(self.brief, history, buyer_offer),
-            config=types.GenerateContentConfig(
-                system_instruction=self.system_prompt,
-                response_mime_type="application/json",
-                response_json_schema=OFFER_JSON_SCHEMA,
-            ),
+            max_tokens=16000,  # leaves room for adaptive thinking before the short JSON answer
+            system=self.system_prompt,
+            messages=build_messages(self.brief, history, buyer_offer),
+            output_config={
+                "effort": config.SUPPLIER_EFFORT,
+                "format": {"type": "json_schema", "schema": OFFER_JSON_SCHEMA},
+            },
+            betas=[FALLBACK_BETA],
+            fallbacks="default",
         )
-        if not response.text:
-            raise RuntimeError(f"Gemini returned no text (finish reason: {finish_reason(response)})")
-        return Offer.from_dict(json.loads(response.text))
+        if response.stop_reason == "refusal":
+            raise RuntimeError(f"Claude declined to answer the offer: {response.stop_details}")
+        if response.stop_reason == "max_tokens":
+            raise RuntimeError("Claude ran out of output tokens before answering.")
+        text = next((b.text for b in response.content if b.type == "text"), "")
+        return Offer.from_dict(json.loads(text))
 
 
-def build_contents(brief: SupplierBrief, history: list[Turn], buyer_offer: Offer) -> list[types.Content]:
-    """The full conversation for Gemini: past turns plus the buyer's new offer."""
-    contents = []
+def build_messages(brief: SupplierBrief, history: list[Turn], buyer_offer: Offer) -> list[dict]:
+    """The full conversation for Claude: past turns plus the buyer's new offer."""
+    messages = []
     for turn in history:
-        contents.append(user_content(json.dumps({"buyer_offer": turn.buyer.to_dict()})))
-        contents.append(types.Content(role="model", parts=[types.Part(text=json.dumps(turn.supplier.to_dict()))]))
-    contents.append(user_content(build_current_prompt(brief, len(history) + 1, buyer_offer)))
-    return contents
+        messages.append({"role": "user", "content": json.dumps({"buyer_offer": turn.buyer.to_dict()})})
+        messages.append({"role": "assistant", "content": json.dumps(turn.supplier.to_dict())})
+    messages.append({"role": "user", "content": build_current_prompt(brief, len(history) + 1, buyer_offer)})
+    return messages
 
 
 def build_current_prompt(brief: SupplierBrief, round_number: int, buyer_offer: Offer) -> str:
@@ -121,15 +129,6 @@ def build_current_prompt(brief: SupplierBrief, round_number: int, buyer_offer: O
         f"PRIVATE: for the buyer's requested terms your list price is ${list_price:.2f}/kg "
         f"and your minimum price is ${minimum:.2f}/kg."
     )
-
-
-def user_content(text: str) -> types.Content:
-    return types.Content(role="user", parts=[types.Part(text=text)])
-
-
-def finish_reason(response) -> str:
-    candidates = getattr(response, "candidates", None) or []
-    return str(candidates[0].finish_reason) if candidates else "unknown"
 
 
 class SupplierNegotiator:

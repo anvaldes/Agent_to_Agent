@@ -136,9 +136,8 @@ jobs:
               EXTRA_FLAGS+=(--timeout=900)   # a full negotiation spans several LLM calls per round
               ;;
             supplier-agent)
-              # Gemini through Vertex AI with the runtime service account: no API key.
-              ENV_VARS="AGENT_URL=${AGENT_URL},GOOGLE_GENAI_USE_VERTEXAI=true,GOOGLE_CLOUD_PROJECT=${PROJECT_ID},GOOGLE_CLOUD_LOCATION=global"
-              EXTRA_FLAGS+=(--clear-secrets)
+              ENV_VARS="AGENT_URL=${AGENT_URL}"
+              EXTRA_FLAGS+=(--set-secrets="ANTHROPIC_API_KEY=ANTHROPIC_API_KEY:latest")
               EXTRA_FLAGS+=(--max-instances=1)   # negotiation history is kept in memory per context_id
               ;;
             referee-agent)

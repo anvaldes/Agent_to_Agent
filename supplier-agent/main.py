@@ -47,7 +47,7 @@ def build_agent_card() -> AgentCard:
     return AgentCard(
         name="Supplier Agent - Andes Roasters",
         description=(
-            "Sales agent for Andes Roasters, powered by Gemini on Vertex AI. "
+            "Sales agent for Andes Roasters, powered by Claude. "
             "Quotes and negotiates coffee bean orders with buyer agents using the Agent2Agent (A2A) protocol."
         ),
         version="1.0.0",

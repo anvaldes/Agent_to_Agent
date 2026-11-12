@@ -15,11 +15,11 @@ PORT = int(os.getenv("PORT", "8081"))
 # A2A clients send their requests to this URL, so it must be reachable by callers.
 AGENT_URL = os.getenv("AGENT_URL", f"http://localhost:{PORT}")
 
-# --- LLM settings (Gemini on Vertex AI) -----------------------------------------
-# google-genai reads GOOGLE_GENAI_USE_VERTEXAI, GOOGLE_CLOUD_PROJECT and
-# GOOGLE_CLOUD_LOCATION from the environment and authenticates with the runtime
-# service account (Application Default Credentials). No API key is used.
-SUPPLIER_MODEL = os.getenv("SUPPLIER_MODEL", "gemini-3.5-flash")
+# --- LLM settings (Claude) ----------------------------------------------------
+# ANTHROPIC_API_KEY is injected by Cloud Run from Secret Manager.
+SUPPLIER_MODEL = os.getenv("SUPPLIER_MODEL", "claude-opus-5-5")
+# Reasoning depth for each reply: low | medium | high | xhigh | max.
+SUPPLIER_EFFORT = os.getenv("SUPPLIER_EFFORT", "medium")
 
 # How many negotiations (context_ids) to keep in memory before forgetting the oldest.
 MAX_NEGOTIATIONS_IN_MEMORY = int(os.getenv("MAX_NEGOTIATIONS_IN_MEMORY", "200"))

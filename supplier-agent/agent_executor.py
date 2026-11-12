@@ -51,7 +51,7 @@ class SupplierAgentExecutor(AgentExecutor):
             message=new_text_message("Reviewing the offer", context_id=task.context_id, task_id=task.id),
         )
 
-        # 3. Decide the reply (Gemini + guardrails)
+        # 3. Decide the reply (Claude + guardrails)
         try:
             reply = await self.negotiator.respond(task.context_id, buyer_offer)
         except Exception as exc:

@@ -1,11 +1,11 @@
 # Agent2Agent (A2A) negotiation demo on Cloud Run
 
-Three independent AI agents, each its own Cloud Run service, play a B2B negotiation game.
+Three independent AI agents, all powered by Claude and each its own Cloud Run service, play a B2B negotiation game.
 They talk to each other **only** through the [Agent2Agent (A2A) protocol](https://a2a-protocol.org)
 (spec 1.0, JSON-RPC binding, `a2a-sdk==1.3.0`).
 
 - **Central Coffee Co.** (buyer, powered by Claude) wants to buy 500 kg of roasted specialty coffee beans.
-- **Andes Roasters** (supplier, powered by Gemini on Vertex AI) wants to sell them at a good margin.
+- **Andes Roasters** (supplier, powered by Claude) wants to sell them at a good margin.
 - A neutral **referee** (powered by Claude) checks the final deal and scores both sides.
 
 ## Architecture
@@ -21,9 +21,9 @@ They talk to each other **only** through the [Agent2Agent (A2A) protocol](https:
                     offer ⇄ counter_offer (same      │              │ negotiation
                     context_id for every round)      ▼              ▼
                               ┌──────────────────────────┐  ┌───────────────────────┐
-                              │ supplier-agent  (Gemini) │  │ referee-agent (Claude)│
+                              │ supplier-agent  (Claude) │  │ referee-agent (Claude)│
                               │ Andes Roasters           │  │ evaluate_deal         │
-                              │ Vertex AI, no API key    │  │ verdict artifact      │
+                              │ counter_offer artifact   │  │ verdict artifact      │
                               └──────────────────────────┘  └───────────────────────┘
 
   Every agent exposes:  GET /.well-known/agent-card.json   (A2A discovery)
@@ -36,7 +36,7 @@ They talk to each other **only** through the [Agent2Agent (A2A) protocol](https:
 | Service | LLM | Agent Card name | Skill | What it does |
 |---|---|---|---|---|
 | `buyer-agent` | Claude (`BUYER_MODEL`, default `claude-sonnet-5-5`) | Buyer Agent - Central Coffee Co. | `negotiate_purchase` | Discovers the supplier through its Agent Card, runs up to `MAX_ROUNDS` (6) rounds within a private budget (target $7.50/kg, max $9.00/kg, delivery ≤ 30 days), then sends the result to the referee. Returns the artifacts `deal_summary`, `transcript` and `verdict`. |
-| `supplier-agent` | Gemini (`SUPPLIER_MODEL`, default `gemini-3.5-flash`) on Vertex AI | Supplier Agent - Andes Roasters | `quote_and_negotiate` | Answers each offer with a `counter_offer` artifact. Keeps the history per `context_id` and sends all of it to Gemini every turn. Private brief: cost $6.20, floor $6.80, list $9.50/kg; delivery in less than 20 days +8%; payment terms beyond 30 days +3%; 5% off above 800 kg. |
+| `supplier-agent` | Claude (`SUPPLIER_MODEL`, default `claude-opus-5-5`) | Supplier Agent - Andes Roasters | `quote_and_negotiate` | Answers each offer with a `counter_offer` artifact. Keeps the history per `context_id` and sends all of it to Claude every turn. Private brief: cost $6.20, floor $6.80, list $9.50/kg; delivery in less than 20 days +8%; payment terms beyond 30 days +3%; 5% off above 800 kg. |
 | `referee-agent` | Claude (`REFEREE_MODEL`, default `claude-opus-5-5`) | Referee Agent | `evaluate_deal` | Runs rule checks in code, then asks Claude to score both sides against a public market price (`MARKET_PRICE_PER_KG`, default $8.25). Returns a `verdict` artifact. |
 
 **Guardrails in code, not just in prompts.** Each LLM proposes a move, and code checks it before anything is sent:
@@ -70,12 +70,11 @@ Referee request: DataPart `{"deal_summary": {...}}` + TextPart with the transcri
 
 ## Run locally
 
-Prerequisites: Python 3.12+, an Anthropic API key, and Vertex AI access for the supplier.
+Prerequisites: Python 3.12+ and an Anthropic API key (all three agents use it).
 
 ```bash
 # 1. Credentials (never commit them: .env is git-ignored)
 echo 'ANTHROPIC_API_KEY=sk-ant-...' > .env
-gcloud auth application-default login          # Gemini on Vertex AI, no API key
 
 # 2. Start the three agents (buyer :8080, supplier :8081, referee :8082)
 ./scripts/run_local.sh
@@ -99,7 +98,7 @@ streaming, and prints every status update and artifact. DataParts are printed as
 The buyer tests run the real buyer A2A server against a **mock A2A supplier** and a **mock A2A referee**
 over real HTTP, with Claude stubbed. They cover: a deal, a supplier `WITHDRAW`, max rounds reached, the
 max-price guardrail and the referee verdict. Supplier and referee tests cover the floor-price guardrail,
-history per `context_id` and the rule checks, with Gemini and Claude stubbed.
+history per `context_id` and the rule checks, with Claude stubbed.
 
 ## Deployment (GitHub Actions → Cloud Run)
 
@@ -115,7 +114,7 @@ Pushing to `main` runs [`.github/workflows/deploy.yml`](.github/workflows/deploy
 | Agent | Env vars | Secret | Extra |
 |---|---|---|---|
 | `buyer-agent` | `AGENT_URL`, `SUPPLIER_AGENT_URL`, `REFEREE_AGENT_URL`, `USE_ID_TOKEN=false` | `ANTHROPIC_API_KEY` | `--timeout=900` (a negotiation spans many LLM calls) |
-| `supplier-agent` | `AGENT_URL`, `GOOGLE_GENAI_USE_VERTEXAI=true`, `GOOGLE_CLOUD_PROJECT`, `GOOGLE_CLOUD_LOCATION=global` | none | `--max-instances=1` (history is in memory) |
+| `supplier-agent` | `AGENT_URL` | `ANTHROPIC_API_KEY` | `--max-instances=1` (history is in memory) |
 | `referee-agent` | `AGENT_URL` | `ANTHROPIC_API_KEY` | none |
 
 Convention: **folder name = image name = Cloud Run service name**, and service URLs are
