@@ -1,4 +1,4 @@
-# Agent2Agent (A2A) test repo on Cloud Run
+# 🤝 Agent2Agent (A2A) test repo on Cloud Run
 
 > **This is a test / learning repository.** It exists to try out the Agent2Agent (A2A) protocol end to
 > end: three AI agents, three separate Cloud Run services, talking to each other only through A2A.
@@ -18,7 +18,7 @@ use Claude. They never share code, memory or databases: everything they know abo
 through A2A messages. The protocol version is 1.0 (JSON-RPC binding), implemented with the official
 Python SDK `a2a-sdk==1.3.0`.
 
-## 2. What is Agent2Agent (A2A)?
+## 2. 🤝 What is Agent2Agent (A2A)?
 
 [Agent2Agent (A2A)](https://a2a-protocol.org) is an open protocol that lets AI agents discover each other
 and work together, even when different teams build them with different frameworks, LLMs or vendors.
