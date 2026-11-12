@@ -33,8 +33,44 @@ jobs:
               - 'buyer-agent/**'
               - '.github/workflows/deploy.yml'
 
-  deploy:
+  # Sync GitHub secrets into GCP Secret Manager (create if missing, add a new version only if the value changed)
+  sync-secrets:
     needs: changes
+    if: needs.changes.outputs.agents != '[]'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v1
+        with:
+          credentials_json: '${{ secrets.GCP_SA_KEY }}'
+      - name: Set up gcloud
+        uses: google-github-actions/setup-gcloud@v2
+      - name: Sync secrets to Secret Manager
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          set -euo pipefail
+          sync_secret() {
+            local name="$1" value="$2"
+            if [ -z "$value" ]; then echo "::error::GitHub secret $name is empty or missing"; exit 1; fi
+            if ! gcloud secrets describe "$name" --project="$PROJECT_ID" >/dev/null 2>&1; then
+              printf '%s' "$value" | gcloud secrets create "$name" --project="$PROJECT_ID" \
+                --replication-policy=automatic --data-file=-
+              echo "Created secret $name"
+            elif [ "$(gcloud secrets versions access latest --secret="$name" --project="$PROJECT_ID")" != "$value" ]; then
+              printf '%s' "$value" | gcloud secrets versions add "$name" --project="$PROJECT_ID" --data-file=-
+              echo "Added new version of $name"
+            else
+              echo "$name is up to date"
+            fi
+          }
+          # To add a secret: map it in this step's env and add a sync_secret line
+          sync_secret ANTHROPIC_API_KEY "$ANTHROPIC_API_KEY"
+
+  deploy:
+    needs: [changes, sync-secrets]
     if: needs.changes.outputs.agents != '[]'
     runs-on: ubuntu-latest
     permissions:
@@ -77,8 +113,6 @@ jobs:
 
       # 4. Deploy to Cloud Run
       - name: Deploy to Cloud Run (${{ matrix.agent }})
-        env:
-          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
         run: |
           gcloud run deploy ${{ matrix.agent }} \
           --image=${{ env.IMAGE }}:${{ github.sha }} \
@@ -90,4 +124,4 @@ jobs:
           --cpu=1 \
           --concurrency=16 \
           --service-account=${{ env.SERVICE_ACCOUNT }} \
-          --set-env-vars="ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}"
+          --set-secrets="ANTHROPIC_API_KEY=ANTHROPIC_API_KEY:latest"
